@@ -5,131 +5,209 @@ from __future__ import annotations
 """
 PDF generation for employee profile download.
 
-Uses WeasyPrint to render an inline HTML/CSS template to PDF bytes.
-Accepts normalised ORM objects from the relational tables introduced in
-Phase 2.1 (EmployeeSkill, EmployeeExperience, Project, Certification,
-Education) rather than JSONB lists.
+Uses ReportLab (pure-Python) to build a clean A4 profile PDF.
+Accepts normalised ORM objects from the relational tables.
 """
 
-import html
+from io import BytesIO
 from typing import Any
 
+from reportlab.lib import colors
+from reportlab.lib.enums import TA_LEFT
+from reportlab.lib.pagesizes import A4
+from reportlab.lib.styles import ParagraphStyle, getSampleStyleSheet
+from reportlab.lib.units import mm
+from reportlab.platypus import (
+    HRFlowable,
+    Paragraph,
+    SimpleDocTemplate,
+    Spacer,
+    Table,
+    TableStyle,
+)
 
-def _esc(value: Any) -> str:
-    """HTML-escape a value; convert None to empty string."""
-    if value is None:
-        return ""
-    return html.escape(str(value))
+# ---------------------------------------------------------------------------
+# Colour palette
+# ---------------------------------------------------------------------------
+
+_BRAND   = colors.HexColor("#1a4f8a")
+_LIGHT   = colors.HexColor("#e8f0fe")
+_GREY    = colors.HexColor("#555555")
+_BORDER  = colors.HexColor("#dddddd")
+_WHITE   = colors.white
+_BLACK   = colors.HexColor("#222222")
+
+# ---------------------------------------------------------------------------
+# Styles
+# ---------------------------------------------------------------------------
+
+_base = getSampleStyleSheet()
+
+_H1 = ParagraphStyle(
+    "H1", fontName="Helvetica-Bold", fontSize=18, textColor=_BRAND,
+    spaceAfter=2, leading=22,
+)
+_H2 = ParagraphStyle(
+    "H2", fontName="Helvetica-Bold", fontSize=11, textColor=_BRAND,
+    spaceBefore=10, spaceAfter=4, leading=14,
+)
+_BODY = ParagraphStyle(
+    "Body", fontName="Helvetica", fontSize=9, textColor=_BLACK,
+    leading=13, spaceAfter=3,
+)
+_SMALL = ParagraphStyle(
+    "Small", fontName="Helvetica", fontSize=8.5, textColor=_GREY,
+    leading=12, spaceAfter=2,
+)
+_BOLD_SMALL = ParagraphStyle(
+    "BoldSmall", fontName="Helvetica-Bold", fontSize=9, textColor=_BLACK,
+    leading=13,
+)
+_LINK = ParagraphStyle(
+    "Link", fontName="Helvetica", fontSize=8.5, textColor=_BRAND, leading=12,
+)
 
 
-def _skill_rows(skills: list[Any]) -> str:
-    """
-    Render ``<tr>`` rows for the skills table.
+def _s(value: Any) -> str:
+    """Return str(value) or empty string for None."""
+    return "" if value is None else str(value)
 
-    Each item is an ``EmployeeSkill`` ORM instance with a related ``skill``
-    (``SkillMaster``).
-    """
+
+def _p(text: str, style: ParagraphStyle = _BODY) -> Paragraph:
+    return Paragraph(text or "", style)
+
+
+def _section(story: list, title: str) -> None:
+    story.append(Spacer(1, 4))
+    story.append(_p(title, _H2))
+    story.append(HRFlowable(width="100%", thickness=1, color=_BRAND, spaceAfter=4))
+
+
+# ---------------------------------------------------------------------------
+# Section builders
+# ---------------------------------------------------------------------------
+
+
+def _build_skills(story: list, skills: list[Any]) -> None:
+    _section(story, "Skills")
     if not skills:
-        return "<tr><td colspan='3'>No skills listed.</td></tr>"
-    rows = []
+        story.append(_p("No skills listed.", _SMALL))
+        return
+
+    rows = [
+        [
+            _p("<b>Skill</b>", _BOLD_SMALL),
+            _p("<b>Proficiency</b>", _BOLD_SMALL),
+            _p("<b>Years</b>", _BOLD_SMALL),
+        ]
+    ]
     for es in skills:
-        rows.append(
-            f"<tr><td>{_esc(es.skill.name)}</td>"
-            f"<td>{_esc(es.proficiency_level)}</td>"
-            f"<td>{_esc(es.years_of_experience)}</td></tr>"
-        )
-    return "".join(rows)
+        rows.append([
+            _p(_s(es.skill.name)),
+            _p(_s(es.proficiency_level)),
+            _p(_s(es.years_of_experience) if es.years_of_experience else "—"),
+        ])
+
+    t = Table(rows, colWidths=[90 * mm, 50 * mm, 30 * mm])
+    t.setStyle(TableStyle([
+        ("BACKGROUND", (0, 0), (-1, 0), _BRAND),
+        ("TEXTCOLOR",  (0, 0), (-1, 0), _WHITE),
+        ("FONTNAME",   (0, 0), (-1, 0), "Helvetica-Bold"),
+        ("FONTSIZE",   (0, 0), (-1, -1), 8.5),
+        ("ROWBACKGROUNDS", (0, 1), (-1, -1), [_WHITE, _LIGHT]),
+        ("GRID",       (0, 0), (-1, -1), 0.4, _BORDER),
+        ("VALIGN",     (0, 0), (-1, -1), "TOP"),
+        ("TOPPADDING", (0, 0), (-1, -1), 4),
+        ("BOTTOMPADDING", (0, 0), (-1, -1), 4),
+    ]))
+    story.append(t)
 
 
-def _experience_items(experiences: list[Any]) -> str:
-    """Render ``<li>`` items for work experience entries."""
+def _build_experience(story: list, experiences: list[Any]) -> None:
+    _section(story, "Work Experience")
     if not experiences:
-        return "<li>No experience listed.</li>"
-    items = []
+        story.append(_p("No experience listed.", _SMALL))
+        return
+
     for exp in experiences:
-        date_range = _esc(exp.start_date)
+        date_range = _s(exp.start_date)
         if exp.is_current:
             date_range += " — Present"
         elif exp.end_date:
-            date_range += f" — {_esc(exp.end_date)}"
-        location_part = f", {_esc(exp.location)}" if exp.location else ""
-        items.append(
-            f"<li><strong>{_esc(exp.designation)}</strong> at {_esc(exp.company_name)}"
-            f"{location_part} ({date_range})"
-            + (f"<br/><em>{_esc(exp.description)}</em>" if exp.description else "")
-            + "</li>"
-        )
-    return "".join(items)
+            date_range += f" — {_s(exp.end_date)}"
+
+        loc = f", {_s(exp.location)}" if exp.location else ""
+        story.append(_p(f"<b>{_s(exp.designation)}</b> · {_s(exp.company_name)}{loc}", _BOLD_SMALL))
+        story.append(_p(date_range, _SMALL))
+        if exp.description:
+            story.append(_p(_s(exp.description), _BODY))
+        story.append(Spacer(1, 4))
 
 
-def _project_items(projects: list[Any]) -> str:
-    """Render ``<li>`` items for project entries (with skill badges)."""
+def _build_projects(story: list, projects: list[Any]) -> None:
+    _section(story, "Projects")
     if not projects:
-        return "<li>No projects listed.</li>"
-    items = []
+        story.append(_p("No projects listed.", _SMALL))
+        return
+
     for proj in projects:
-        skill_badges = "".join(
-            f'<span class="badge">{_esc(ps.skill.name)}</span>'
-            for ps in proj.project_skills.all()
-        )
-        client_part = f" | Client: {_esc(proj.client_name)}" if proj.client_name else ""
-        role_part = f" | Role: {_esc(proj.role)}" if proj.role else ""
-        items.append(
-            f"<li><strong>{_esc(proj.name)}</strong>{client_part}{role_part}"
-            + (f"<br/>{_esc(proj.description)}" if proj.description else "")
-            + (f"<br/>{skill_badges}" if skill_badges else "")
-            + "</li>"
-        )
-    return "".join(items)
+        client = f" · Client: {_s(proj.client_name)}" if proj.client_name else ""
+        role = f" · Role: {_s(proj.role)}" if proj.role else ""
+        story.append(_p(f"<b>{_s(proj.name)}</b>{client}{role}", _BOLD_SMALL))
+        if proj.description:
+            story.append(_p(_s(proj.description), _BODY))
+        tech = [ps.skill.name for ps in proj.project_skills.all()]
+        if tech:
+            story.append(_p("Tech: " + ", ".join(tech), _SMALL))
+        story.append(Spacer(1, 4))
 
 
-def _certification_items(certifications: list[Any]) -> str:
-    """Render ``<li>`` items for certification entries."""
+def _build_certifications(story: list, certifications: list[Any]) -> None:
+    _section(story, "Certifications")
     if not certifications:
-        return "<li>No certifications listed.</li>"
-    items = []
+        story.append(_p("No certifications listed.", _SMALL))
+        return
+
     for cert in certifications:
-        issuer_part = f" — {_esc(cert.issuer)}" if cert.issuer else ""
-        date_part = f" ({_esc(cert.issue_date)})" if cert.issue_date else ""
-        items.append(f"<li>{_esc(cert.name)}{issuer_part}{date_part}</li>")
-    return "".join(items)
+        issuer = f" — {_s(cert.issuer)}" if cert.issuer else ""
+        date = f" ({_s(cert.issue_date)})" if cert.issue_date else ""
+        story.append(_p(f"<b>{_s(cert.name)}</b>{issuer}{date}", _BODY))
 
 
-def _education_items(education: list[Any]) -> str:
-    """Render ``<li>`` items for education entries."""
+def _build_education(story: list, education: list[Any]) -> None:
+    _section(story, "Education")
     if not education:
-        return "<li>No education listed.</li>"
-    items = []
+        story.append(_p("No education listed.", _SMALL))
+        return
+
     for edu in education:
-        year_range = ""
+        years = ""
         if edu.start_year and edu.end_year:
-            year_range = f" ({edu.start_year}–{edu.end_year})"
+            years = f" ({edu.start_year}–{edu.end_year})"
         elif edu.end_year:
-            year_range = f" ({edu.end_year})"
-        grade_part = f" | Grade: {_esc(edu.grade)}" if edu.grade else ""
-        items.append(
-            f"<li>{_esc(edu.degree)} — {_esc(edu.institution)}{year_range}{grade_part}</li>"
-        )
-    return "".join(items)
+            years = f" ({edu.end_year})"
+        grade = f" · Grade: {_s(edu.grade)}" if edu.grade else ""
+        story.append(_p(f"<b>{_s(edu.degree)}</b> — {_s(edu.institution)}{years}{grade}", _BODY))
 
 
-def _language_items(languages: list[Any]) -> str:
-    """Render ``<li>`` items for language entries (still stored as JSONB dicts)."""
+def _build_languages(story: list, languages: list[Any]) -> None:
     if not languages:
-        return "<li>None listed.</li>"
-    items = []
+        return
+    _section(story, "Languages")
+    parts = []
     for lang in languages:
         if isinstance(lang, dict):
             name = lang.get("name", "")
-            proficiency = lang.get("proficiency", "")
+            prof = lang.get("proficiency", "")
+            parts.append(f"{name} ({prof})" if prof else name)
         else:
-            name = str(lang)
-            proficiency = ""
-        parts = [_esc(name)]
-        if proficiency:
-            parts.append(_esc(proficiency))
-        items.append(f"<li>{' — '.join(parts)}</li>")
-    return "".join(items)
+            parts.append(str(lang))
+    story.append(_p(", ".join(parts), _BODY))
+
+
+# ---------------------------------------------------------------------------
+# Main entry point
+# ---------------------------------------------------------------------------
 
 
 def generate_profile_pdf(
@@ -142,165 +220,63 @@ def generate_profile_pdf(
     education: list[Any] | None = None,
 ) -> bytes:
     """
-    Render a full employee profile to PDF bytes.
-
-    Parameters
-    ----------
-    user:
-        A ``UserProfile`` model instance.
-    employee:
-        An ``EmployeeProfile`` model instance, or ``None`` if not yet created.
-    skills:
-        List of ``EmployeeSkill`` instances (with ``skill`` FK pre-fetched).
-    experiences:
-        List of ``EmployeeExperience`` instances.
-    projects:
-        List of ``Project`` instances (with ``project_skills__skill`` pre-fetched).
-    certifications:
-        List of ``Certification`` instances.
-    education:
-        List of ``Education`` instances.
-
-    Returns
-    -------
-    bytes
-        Raw PDF binary content ready to be served as ``application/pdf``.
+    Render a full employee profile to PDF bytes using ReportLab.
     """
-    from weasyprint import CSS, HTML  # noqa: PLC0415 — optional heavy dep
-
-    _skills: list[Any] = skills or []
-    _experiences: list[Any] = experiences or []
-    _projects: list[Any] = projects or []
-    _certs: list[Any] = certifications or []
-    _education: list[Any] = education or []
-    _languages: list[Any] = (getattr(employee, "languages", None) or []) if employee else []
-
-    summary: str = _esc(getattr(employee, "summary", "")) if employee else ""
-    linkedin: str = _esc(getattr(employee, "linkedin_url", "")) if employee else ""
-    github: str = _esc(getattr(employee, "github_url", "")) if employee else ""
-    portfolio: str = _esc(getattr(employee, "portfolio_url", "")) if employee else ""
-
-    html_content = f"""<!DOCTYPE html>
-<html lang="en">
-<head>
-<meta charset="UTF-8"/>
-<title>Employee Profile — {_esc(user.full_name)}</title>
-<style>
-  @page {{
-    size: A4;
-    margin: 20mm 18mm 20mm 18mm;
-  }}
-  * {{ box-sizing: border-box; margin: 0; padding: 0; }}
-  body {{
-    font-family: "Helvetica Neue", Helvetica, Arial, sans-serif;
-    font-size: 10pt;
-    color: #222;
-    line-height: 1.5;
-  }}
-  h1 {{ font-size: 20pt; color: #1a4f8a; margin-bottom: 2px; }}
-  h2 {{
-    font-size: 12pt;
-    color: #1a4f8a;
-    border-bottom: 1.5px solid #1a4f8a;
-    padding-bottom: 3px;
-    margin-top: 14px;
-    margin-bottom: 6px;
-  }}
-  .header {{ margin-bottom: 10px; }}
-  .meta {{ color: #555; font-size: 9pt; margin-top: 4px; }}
-  .meta span {{ margin-right: 16px; }}
-  .links {{ margin-top: 4px; font-size: 9pt; color: #555; }}
-  .links a {{ color: #1a4f8a; text-decoration: none; margin-right: 14px; }}
-  table {{
-    width: 100%;
-    border-collapse: collapse;
-    margin-top: 4px;
-    font-size: 9.5pt;
-  }}
-  th {{
-    background: #1a4f8a;
-    color: white;
-    padding: 5px 8px;
-    text-align: left;
-    font-weight: bold;
-  }}
-  td {{ padding: 4px 8px; border-bottom: 0.5px solid #ddd; vertical-align: top; }}
-  tr:nth-child(even) td {{ background: #f7f9fc; }}
-  ul {{ padding-left: 18px; margin-top: 4px; }}
-  ul li {{ margin-bottom: 6px; }}
-  p {{ margin-top: 4px; }}
-  .section {{ margin-bottom: 4px; }}
-  .badge {{
-    display: inline-block;
-    background: #e8f0fe;
-    color: #1a4f8a;
-    border-radius: 4px;
-    padding: 1px 7px;
-    font-size: 8.5pt;
-    margin: 2px 3px 2px 0;
-  }}
-</style>
-</head>
-<body>
-
-<div class="header">
-  <h1>{_esc(user.full_name)}</h1>
-  <div class="meta">
-    <span>{_esc(user.designation)}</span>
-    <span>{_esc(user.department)}</span>
-    <span>{_esc(user.location)}</span>
-  </div>
-  <div class="meta">
-    <span>Email: {_esc(user.email)}</span>
-    {'<span>Phone: ' + _esc(user.phone) + '</span>' if user.phone else ''}
-    {'<span>Experience: ' + _esc(user.experience_years) + ' yrs</span>' if user.experience_years else ''}
-  </div>
-  {'<div class="links">' +
-    ('<a href="' + linkedin + '">' + linkedin + '</a>' if linkedin else '') +
-    ('<a href="' + github + '">' + github + '</a>' if github else '') +
-    ('<a href="' + portfolio + '">' + portfolio + '</a>' if portfolio else '') +
-   '</div>'
-   if (linkedin or github or portfolio) else ''}
-</div>
-
-{'<h2>Summary</h2><p>' + summary + '</p>' if summary else ''}
-
-<h2>Skills</h2>
-<table>
-  <thead>
-    <tr><th>Skill</th><th>Proficiency</th><th>Years</th></tr>
-  </thead>
-  <tbody>
-    {_skill_rows(_skills)}
-  </tbody>
-</table>
-
-{'<h2>Languages</h2><ul>' + _language_items(_languages) + '</ul>' if _languages else ''}
-
-<h2>Experience</h2>
-<ul>
-  {_experience_items(_experiences)}
-</ul>
-
-<h2>Projects</h2>
-<ul>
-  {_project_items(_projects)}
-</ul>
-
-<h2>Education</h2>
-<ul>
-  {_education_items(_education)}
-</ul>
-
-<h2>Certifications</h2>
-<ul>
-  {_certification_items(_certs)}
-</ul>
-
-</body>
-</html>"""
-
-    pdf_bytes: bytes = HTML(string=html_content).write_pdf(
-        stylesheets=[CSS(string="")]
+    buf = BytesIO()
+    doc = SimpleDocTemplate(
+        buf,
+        pagesize=A4,
+        leftMargin=18 * mm,
+        rightMargin=18 * mm,
+        topMargin=20 * mm,
+        bottomMargin=20 * mm,
+        title=f"Profile — {_s(user.full_name)}",
     )
-    return pdf_bytes
+
+    story: list = []
+
+    # ── Header ────────────────────────────────────────────────────────────
+    story.append(_p(_s(user.full_name), _H1))
+
+    meta_parts = [_s(user.designation), _s(user.department), _s(user.location)]
+    meta = " · ".join(p for p in meta_parts if p)
+    if meta:
+        story.append(_p(meta, _SMALL))
+
+    contact_parts = [f"Email: {_s(user.email)}"]
+    if user.phone:
+        contact_parts.append(f"Phone: {_s(user.phone)}")
+    if user.experience_years:
+        contact_parts.append(f"Experience: {_s(user.experience_years)} yrs")
+    story.append(_p("  ·  ".join(contact_parts), _SMALL))
+
+    if employee:
+        links = []
+        if employee.linkedin_url:
+            links.append(f'LinkedIn: <link href="{_s(employee.linkedin_url)}">{_s(employee.linkedin_url)}</link>')
+        if employee.github_url:
+            links.append(f'GitHub: <link href="{_s(employee.github_url)}">{_s(employee.github_url)}</link>')
+        if employee.portfolio_url:
+            links.append(f'Portfolio: <link href="{_s(employee.portfolio_url)}">{_s(employee.portfolio_url)}</link>')
+        if links:
+            story.append(_p("  ·  ".join(links), _LINK))
+
+    story.append(Spacer(1, 4))
+    story.append(HRFlowable(width="100%", thickness=1.5, color=_BRAND))
+
+    # ── Summary ───────────────────────────────────────────────────────────
+    summary = (employee.summary or "") if employee else ""
+    if summary:
+        _section(story, "Summary")
+        story.append(_p(summary, _BODY))
+
+    # ── Sections ──────────────────────────────────────────────────────────
+    _build_skills(story, skills or [])
+    _build_experience(story, experiences or [])
+    _build_projects(story, projects or [])
+    _build_education(story, education or [])
+    _build_certifications(story, certifications or [])
+    _build_languages(story, (employee.languages or []) if employee else [])
+
+    doc.build(story)
+    return buf.getvalue()

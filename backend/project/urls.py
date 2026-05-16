@@ -5,6 +5,7 @@ from __future__ import annotations
 from django.contrib import admin
 from django.urls import include, path
 
+from apps.ai_integration.views import GenerateEmbeddingView, SearchView
 from apps.profiles.views import SkillsMasterView
 
 urlpatterns = [
@@ -17,4 +18,12 @@ urlpatterns = [
     path("api/v1/ai/", include("apps.ai_integration.urls")),
     # Skills master catalogue — separate from profile sub-resources
     path("api/v1/skills/", SkillsMasterView.as_view(), name="skills-master"),
+    # Semantic search
+    path("api/v1/search/", SearchView.as_view(), name="nlp-search"),
+    # Embedding generation (HR triggers per-profile)
+    path(
+        "api/v1/profiles/<uuid:profile_id>/generate-embedding/",
+        GenerateEmbeddingView.as_view(),
+        name="generate-embedding",
+    ),
 ]

@@ -1,32 +1,129 @@
 'use client'
 
 import { useState } from 'react'
+import { BrainCircuit, X } from 'lucide-react'
+import { toast } from 'sonner'
+import { createClient } from '@/lib/supabase'
 import { NlpSearchBox } from '@/components/search/NlpSearchBox'
+import { SearchResults } from '@/components/search/SearchResults'
+import { Badge } from '@/components/ui/badge'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
-import { BrainCircuit } from 'lucide-react'
+import type { ApiEnvelope, QueryParsed, SearchResponse, SearchResult } from '@/types'
+
+const API_BASE = process.env.NEXT_PUBLIC_API_BASE_URL ?? 'http://localhost:8000'
+
+function QueryChips({ parsed }: { parsed: QueryParsed }) {
+  const chips: { label: string; value: string }[] = []
+
+  if (parsed.skills_required.length > 0)
+    chips.push({ label: 'Skills', value: parsed.skills_required.join(', ') })
+  if (parsed.skills_nice_to_have.length > 0)
+    chips.push({ label: 'Nice-to-have', value: parsed.skills_nice_to_have.join(', ') })
+  if (parsed.location)
+    chips.push({ label: 'Location', value: parsed.location })
+  if (parsed.min_years_experience != null)
+    chips.push({ label: 'Min exp', value: `${parsed.min_years_experience} yrs` })
+  if (parsed.role_hint)
+    chips.push({ label: 'Role', value: parsed.role_hint })
+  if (parsed.department)
+    chips.push({ label: 'Dept', value: parsed.department })
+  if (parsed.availability_hint)
+    chips.push({ label: 'Availability', value: parsed.availability_hint })
+
+  if (chips.length === 0) return null
+
+  return (
+    <div className="flex flex-wrap gap-2 pt-2">
+      <span className="text-xs text-gray-400 self-center">AI understood:</span>
+      {chips.map((chip) => (
+        <Badge
+          key={chip.label}
+          variant="secondary"
+          className="text-xs gap-1 bg-indigo-50 text-indigo-700 border border-indigo-200"
+        >
+          <span className="font-medium">{chip.label}:</span> {chip.value}
+        </Badge>
+      ))}
+    </div>
+  )
+}
 
 export default function SmartSearchPage() {
+  const supabase = createClient()
+
   const [query, setQuery] = useState('')
   const [isLoading, setIsLoading] = useState(false)
-  const [submittedQuery, setSubmittedQuery] = useState<string | null>(null)
+  const [results, setResults] = useState<SearchResult[] | null>(null)
+  const [queryParsed, setQueryParsed] = useState<QueryParsed | null>(null)
+  const [totalResults, setTotalResults] = useState(0)
+  const [searchError, setSearchError] = useState<string | null>(null)
 
-  // Filter state — UI-only for now
-  const [skillFilter, setSkillFilter] = useState('')
+  // Optional explicit filters (override AI-parsed values)
   const [locationFilter, setLocationFilter] = useState('')
   const [expFilter, setExpFilter] = useState('')
   const [departmentFilter, setDepartmentFilter] = useState('')
 
-  const handleSearch = () => {
-    if (query.trim().length < 3) return
+  const handleSearch = async () => {
+    if (query.trim().split(/\s+/).length < 3) return
+
     setIsLoading(true)
-    // Simulate a 1s loading state, then show the placeholder message
-    setTimeout(() => {
-      setSubmittedQuery(query.trim())
+    setResults(null)
+    setQueryParsed(null)
+    setSearchError(null)
+
+    try {
+      const { data: sessionData } = await supabase.auth.getSession()
+      if (!sessionData.session) {
+        toast.error('Session expired. Please log in again.')
+        return
+      }
+
+      const body = {
+        query: query.trim(),
+        filters: {
+          location: locationFilter || null,
+          min_years: expFilter ? Number(expFilter) : null,
+          department: departmentFilter || null,
+        },
+      }
+
+      const res = await fetch(`${API_BASE}/api/v1/search/`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${sessionData.session.access_token}`,
+        },
+        body: JSON.stringify(body),
+      })
+
+      const json: ApiEnvelope<SearchResponse> = await res.json()
+
+      if (!res.ok) {
+        const msg = json.error ?? `Search failed (${res.status})`
+        setSearchError(msg)
+        return
+      }
+
+      setQueryParsed(json.data.query_parsed)
+      setResults(json.data.results)
+      setTotalResults(json.data.total)
+    } catch {
+      setSearchError('Search temporarily unavailable — please try again.')
+    } finally {
       setIsLoading(false)
-    }, 1000)
+    }
   }
+
+  const handleClear = () => {
+    setQuery('')
+    setResults(null)
+    setQueryParsed(null)
+    setSearchError(null)
+    setTotalResults(0)
+  }
+
+  const hasSearched = results !== null || searchError !== null
 
   return (
     <section aria-labelledby="search-heading" className="w-full">
@@ -35,11 +132,12 @@ export default function SmartSearchPage() {
           Smart Talent Search
         </h1>
         <p className="mt-1 text-sm text-gray-500">
-          Describe the talent you need in plain English and let AI find the best matches.
+          Describe the talent you need in plain English. Results are ranked by AI match score
+          and limited to approved employee profiles.
         </p>
       </div>
 
-      {/* Search box */}
+      {/* Search box + filters */}
       <div className="rounded-xl border border-gray-200 bg-white shadow-sm p-6 space-y-4">
         <NlpSearchBox
           value={query}
@@ -48,75 +146,61 @@ export default function SmartSearchPage() {
           isLoading={isLoading}
         />
 
-        {/* Filter row */}
-        <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 pt-2 border-t border-gray-100">
-          <div className="space-y-1">
-            <Label className="text-xs text-gray-500">Skill</Label>
-            <Input
-              placeholder="e.g. React"
-              value={skillFilter}
-              onChange={(e) => setSkillFilter(e.target.value)}
-            />
-          </div>
-          <div className="space-y-1">
-            <Label className="text-xs text-gray-500">Location</Label>
-            <Input
-              placeholder="e.g. London"
-              value={locationFilter}
-              onChange={(e) => setLocationFilter(e.target.value)}
-            />
-          </div>
-          <div className="space-y-1">
-            <Label className="text-xs text-gray-500">Min Experience</Label>
-            <Input
-              type="number"
-              placeholder="0"
-              value={expFilter}
-              onChange={(e) => setExpFilter(e.target.value)}
-              min={0}
-            />
-          </div>
-          <div className="space-y-1">
-            <Label className="text-xs text-gray-500">Department</Label>
-            <Input
-              placeholder="e.g. Engineering"
-              value={departmentFilter}
-              onChange={(e) => setDepartmentFilter(e.target.value)}
-            />
-          </div>
-        </div>
+        {/* Query chips — shown after search */}
+        {queryParsed && <QueryChips parsed={queryParsed} />}
+
       </div>
 
-      {/* Results area */}
+      {/* Loading */}
       {isLoading && (
-        <div className="mt-8 flex flex-col items-center gap-3 text-center">
+        <div className="mt-10 flex flex-col items-center gap-3 text-center">
           <div className="h-8 w-8 animate-spin rounded-full border-4 border-indigo-200 border-t-indigo-600" />
-          <p className="text-sm text-gray-500">Searching talent pool...</p>
+          <p className="text-sm text-gray-500">
+            AI is analysing your query and searching the talent pool…
+          </p>
         </div>
       )}
 
-      {!isLoading && submittedQuery && (
-        <div className="mt-8 flex flex-col items-center gap-4 text-center py-16 rounded-xl border border-dashed border-indigo-200 bg-indigo-50">
-          <div className="flex h-16 w-16 items-center justify-center rounded-full bg-indigo-100">
-            <BrainCircuit className="h-8 w-8 text-indigo-500" />
+      {/* Error state */}
+      {!isLoading && searchError && (
+        <div className="mt-8 flex items-start gap-3 rounded-xl border border-red-200 bg-red-50 p-5">
+          <div className="flex-1">
+            <p className="text-sm font-medium text-red-800">{searchError}</p>
           </div>
-          <div className="max-w-md">
-            <h2 className="text-lg font-semibold text-indigo-900">AI-powered search is coming in Phase 3.</h2>
-            <p className="mt-2 text-sm text-indigo-700">
-              Your query has been captured:{' '}
-              <span className="font-medium">&quot;{submittedQuery}&quot;</span>
-            </p>
-            <p className="mt-3 text-xs text-indigo-500">
-              Natural language talent matching with semantic search will be available in the next release.
-            </p>
-          </div>
+          <button onClick={handleClear} className="text-red-400 hover:text-red-600">
+            <X className="h-4 w-4" />
+          </button>
         </div>
       )}
 
-      {!isLoading && !submittedQuery && (
-        <div className="mt-8 flex flex-col items-center gap-3 text-center py-16 text-gray-400">
+      {/* Results */}
+      {!isLoading && results !== null && !searchError && (
+        <>
+          {results.length === 0 ? (
+            <div className="mt-8 flex flex-col items-center gap-4 text-center py-16 rounded-xl border border-dashed border-gray-200 bg-gray-50">
+              <BrainCircuit className="h-10 w-10 text-gray-300" />
+              <div className="max-w-sm">
+                <p className="text-sm font-medium text-gray-700">No approved profiles match your search.</p>
+                <p className="mt-1 text-xs text-gray-500">
+                  Try different skills, remove location filters, or check that employees have approved profiles.
+                </p>
+              </div>
+            </div>
+          ) : (
+            <SearchResults results={results} />
+          )}
+        </>
+      )}
+
+      {/* Idle state */}
+      {!isLoading && !hasSearched && (
+        <div className="mt-10 flex flex-col items-center gap-3 text-center py-16 text-gray-400">
           <BrainCircuit className="h-12 w-12 text-gray-200" />
           <p className="text-sm">Enter a search query above to find talent.</p>
+          <p className="text-xs text-gray-400 max-w-xs">
+            Try: &quot;Senior React developer in Mumbai with fintech experience&quot; or
+            &quot;Backend engineer with 5+ years Java and Spring Boot&quot;
+          </p>
         </div>
       )}
     </section>

@@ -18,7 +18,7 @@ import { LanguagesEditor } from '@/components/profile/LanguagesEditor'
 import { ResumeUpload } from '@/components/profile/ResumeUpload'
 import {
   Pencil, Save, X, Loader2, FileText, Link2,
-  Plus, Trash2, Star,
+  Plus, Trash2, Star, Send, Clock,
 } from 'lucide-react'
 import { format } from 'date-fns'
 import type {
@@ -135,6 +135,8 @@ function EmployeeProfilePageContent() {
   const [projects, setProjects] = useState<NormalizedProject[]>([])
   const [certifications, setCertifications] = useState<NormalizedCertification[]>([])
   const [education, setEducation] = useState<NormalizedEducation[]>([])
+
+  const [isSubmitting, setIsSubmitting] = useState(false)
 
   // ── Section loading states ──
   const [skillsLoading, setSkillsLoading] = useState(false)
@@ -413,6 +415,26 @@ function EmployeeProfilePageContent() {
     setDraft((prev) => (prev ? { ...prev, [field]: value } : prev))
 
   // ─── Skills CRUD ──────────────────────────────────────────────────────────
+  const handleSubmitForReview = async () => {
+    if (!profileId) return
+    setIsSubmitting(true)
+    try {
+      const token = await getToken()
+      const res = await fetch(`${API_BASE}/api/v1/profiles/${profileId}/submit-review/`, {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${token}` },
+      })
+      const body = await res.json().catch(() => ({}))
+      if (!res.ok) throw new Error(body?.error ?? 'Failed to submit profile.')
+      setProfile((prev) => prev ? { ...prev, status: 'submitted' } : prev)
+      toast.success('Profile submitted for HR review.')
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : 'Failed to submit profile.')
+    } finally {
+      setIsSubmitting(false)
+    }
+  }
+
   const handleAddSkill = async () => {
     if (!profileId || !newSkill.skill_name.trim()) return
     setAddingSkill(true)
@@ -812,8 +834,19 @@ function EmployeeProfilePageContent() {
                 <p className="text-xs text-gray-500">{profile.experience_years} yrs experience</p>
               )}
             </div>
-            <div className="shrink-0">
+            <div className="shrink-0 flex flex-col items-end gap-2">
               <ProfileStatusBadge status={profile.status} size="lg" />
+              {(profile.status === 'incomplete' || profile.status === 'rejected') && (
+                <Button
+                  size="sm"
+                  className="text-xs h-7 px-2 py-1"
+                  disabled={isSubmitting}
+                  onClick={handleSubmitForReview}
+                >
+                  {isSubmitting ? <Loader2 className="h-3 w-3 animate-spin mr-1" /> : <Send className="h-3 w-3 mr-1" />}
+                  Submit for Review
+                </Button>
+              )}
             </div>
           </div>
           {profile.status === 'rejected' && (
@@ -1938,6 +1971,34 @@ function EmployeeProfilePageContent() {
                   </p>
                 </div>
               )}
+              {(profile.status === 'incomplete' || profile.status === 'rejected') && (
+                <div className="flex justify-end pt-2">
+                  <Button
+                    className="gap-2 bg-indigo-600 hover:bg-indigo-700"
+                    disabled={isSubmitting}
+                    onClick={handleSubmitForReview}
+                  >
+                    {isSubmitting
+                      ? <Loader2 className="h-4 w-4 animate-spin" />
+                      : <Send className="h-4 w-4" />}
+                    Submit for Review
+                  </Button>
+                </div>
+              )}
+              {profile.status === 'submitted' && (
+                <div className="flex justify-end pt-2">
+                  <Button disabled className="gap-2 bg-blue-50 text-blue-600 border border-blue-200 hover:bg-blue-50">
+                    <Clock className="h-4 w-4" /> Awaiting Review
+                  </Button>
+                </div>
+              )}
+              {profile.status === 'approved' && (
+                <div className="flex justify-end pt-2">
+                  <Button disabled className="gap-2 bg-green-50 text-green-600 border border-green-200 hover:bg-green-50">
+                    Approved
+                  </Button>
+                </div>
+              )}
             </CardContent>
           </Card>
         </TabsContent>
@@ -1953,42 +2014,6 @@ function EmployeeProfilePageContent() {
         </TabsContent>
       </Tabs>
 
-      {/* ── Submit for Review (shown only on non-dashboard tabs) ────────── */}
-      {activeTab !== 'dashboard' && (
-        <Card className="border-indigo-100 bg-indigo-50">
-          <CardContent className="pt-6">
-            <div className="flex items-center justify-between gap-4 flex-wrap">
-              <div>
-                <h3 className="font-semibold text-gray-900">Ready for review?</h3>
-                <p className="mt-0.5 text-sm text-gray-600">
-                  {profile.status === 'submitted' && 'Your profile is currently under review.'}
-                  {profile.status === 'approved' && 'Your profile has been approved by HR.'}
-                  {profile.status === 'rejected' && 'Profile was rejected. Update and resubmit.'}
-                  {profile.status === 'incomplete' && 'Submit your profile for HR review when ready.'}
-                </p>
-              </div>
-              {profile.status === 'submitted' ? (
-                <Button disabled className="gap-2 bg-blue-50 text-blue-600 border border-blue-200 hover:bg-blue-50">
-                  <Clock className="h-4 w-4" /> Awaiting Review
-                </Button>
-              ) : profile.status === 'approved' ? (
-                <Button disabled className="gap-2 bg-green-50 text-green-600 border border-green-200 hover:bg-green-50">
-                  Approved
-                </Button>
-              ) : (
-                <Button
-                  className="gap-2 bg-indigo-600 hover:bg-indigo-700"
-                  disabled={!canSubmit || isSubmitting}
-                  onClick={handleSubmitForReview}
-                >
-                  {isSubmitting ? <Loader2 className="h-4 w-4 animate-spin" /> : <Send className="h-4 w-4" />}
-                  Submit for Review
-                </Button>
-              )}
-            </div>
-          </CardContent>
-        </Card>
-      )}
     </section>
   )
 }

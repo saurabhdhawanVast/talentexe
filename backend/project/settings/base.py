@@ -164,6 +164,7 @@ FRONTEND_URL: str = env("FRONTEND_URL", default="http://localhost:3000")
 # ---------------------------------------------------------------------------
 OLLAMA_BASE_URL: str = env("OLLAMA_BASE_URL", default="http://localhost:11434")
 OLLAMA_LLM_MODEL: str = env("OLLAMA_LLM_MODEL", default="llama3.2:3b")
+OLLAMA_EMBED_MODEL: str = env("OLLAMA_EMBED_MODEL", default="nomic-embed-text")
 
 # ---------------------------------------------------------------------------
 # Email — Brevo SMTP

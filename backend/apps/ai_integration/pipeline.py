@@ -211,6 +211,14 @@ def _write_experiences(profile: UserProfile, experiences: list[dict]) -> None:
         is_current = bool(item.get("is_current", False))
 
         try:
+            exists = EmployeeExperience.objects.filter(
+                profile=profile,
+                company_name__iexact=company,
+                designation__iexact=designation,
+            ).exists()
+            if exists:
+                print(f"  [EXPERIENCE] SKIP (already exists) — {designation} @ {company}")
+                continue
             EmployeeExperience.objects.create(
                 id=uuid.uuid4(),
                 profile=profile,

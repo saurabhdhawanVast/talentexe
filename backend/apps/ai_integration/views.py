@@ -23,7 +23,7 @@ from rest_framework.request import Request
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
-from apps.profiles.models import AIProfileExtraction, ResumeUpload
+from apps.profiles.models import AIProfileExtraction, EmployeeEmbedding, ResumeUpload
 from apps.users.authentication import SupabaseJWTAuthentication
 from apps.users.models import UserProfile
 
@@ -352,3 +352,117 @@ class LinkedinExtractionView(APIView):
             },
             http_status=201,
         )
+
+
+# ---------------------------------------------------------------------------
+# Semantic Search
+# ---------------------------------------------------------------------------
+
+
+class SearchView(APIView):
+    """
+    POST /api/v1/search/
+
+    Run the NLP semantic search pipeline and return ranked employee results.
+    Only approved employee profiles are returned.
+
+    Auth: HR role only.
+
+    Request body:
+        { "query": "...", "filters": { "location": null, "min_years": null, "department": null } }
+
+    Response:
+        { "data": { "query_parsed": {...}, "results": [...], "total": N } }
+    """
+
+    authentication_classes = _AUTH
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request: Request) -> Response:
+        if request.user.role != "hr":
+            return _err("Only HR users can access Smart Search.", http_status=403)
+
+        query = (request.data.get("query") or "").strip()
+        if not query:
+            return _err("query is required.", http_status=400)
+
+        filters: dict = request.data.get("filters") or {}
+
+        from .searcher import search
+        try:
+            result = search(query, filters)
+        except ValueError as exc:
+            return _err(str(exc), http_status=400)
+        except Exception as exc:
+            logger.exception("Search failed: %s", exc)
+            return _err("Search temporarily unavailable.", detail=str(exc), http_status=503)
+
+        return _ok(result)
+
+
+# ---------------------------------------------------------------------------
+# Embedding Generation
+# ---------------------------------------------------------------------------
+
+
+class GenerateEmbeddingView(APIView):
+    """
+    POST /api/v1/profiles/{profile_id}/generate-embedding/
+
+    Generate (or refresh) the vector embedding for an approved employee profile.
+
+    Auth: HR role only.
+    """
+
+    authentication_classes = _AUTH
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request: Request, profile_id: str) -> Response:
+        if request.user.role != "hr":
+            return _err("Only HR users can trigger embedding generation.", http_status=403)
+
+        try:
+            profile = UserProfile.objects.get(id=str(profile_id), is_active=True)
+        except UserProfile.DoesNotExist:
+            return _err("Profile not found.", http_status=404)
+
+        if profile.profile_status != "approved":
+            return _err(
+                "Embeddings can only be generated for approved profiles.",
+                http_status=400,
+            )
+
+        from .profile_text_builder import build_searchable_text
+        from .embedder import generate_embedding
+
+        try:
+            searchable_text = build_searchable_text(profile)
+            if not searchable_text.strip():
+                return _err("Profile has no content to embed.", http_status=400)
+
+            embedding = generate_embedding(searchable_text)
+        except ValueError as exc:
+            return _err(str(exc), http_status=503)
+        except Exception as exc:
+            logger.exception("Embedding generation failed for profile %s: %s", profile_id, exc)
+            return _err("Embedding generation failed.", detail=str(exc), http_status=500)
+
+        # Upsert into employee_embeddings via raw SQL (pgvector column)
+        from django.db import connection
+        embedding_str = "[" + ",".join(str(v) for v in embedding) + "]"
+        with connection.cursor() as cursor:
+            cursor.execute(
+                """
+                INSERT INTO employee_embeddings (id, profile_id, embedding_type, embedding, searchable_text, updated_at)
+                VALUES (gen_random_uuid(), %s, 'profile', %s::vector, %s, NOW())
+                ON CONFLICT (profile_id, embedding_type)
+                DO UPDATE SET
+                    embedding = EXCLUDED.embedding,
+                    searchable_text = EXCLUDED.searchable_text,
+                    updated_at = NOW()
+                """,
+                [str(profile.id), embedding_str, searchable_text],
+            )
+
+        logger.info("Embedding generated/refreshed for profile %s (%d dims)", profile_id, len(embedding))
+        return _ok({"profile_id": str(profile.id), "dims": len(embedding), "status": "ok"})

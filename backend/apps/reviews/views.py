@@ -117,6 +117,35 @@ class ApproveReviewView(APIView):
         profile.profile_status = "approved"
         profile.save(update_fields=["profile_status"])
 
+        # Generate and upsert vector embedding so NLP search picks this profile up immediately.
+        try:
+            from apps.ai_integration.profile_text_builder import build_searchable_text
+            from apps.ai_integration.embedder import generate_embedding
+            from django.db import connection
+
+            searchable_text = build_searchable_text(profile)
+            if searchable_text.strip():
+                embedding = generate_embedding(searchable_text)
+                embedding_str = "[" + ",".join(str(v) for v in embedding) + "]"
+                with connection.cursor() as cursor:
+                    cursor.execute(
+                        """
+                        INSERT INTO employee_embeddings
+                            (id, profile_id, embedding_type, embedding, searchable_text, updated_at)
+                        VALUES (gen_random_uuid(), %s, 'profile', %s::vector, %s, NOW())
+                        ON CONFLICT (profile_id, embedding_type)
+                        DO UPDATE SET
+                            embedding        = EXCLUDED.embedding,
+                            searchable_text  = EXCLUDED.searchable_text,
+                            updated_at       = NOW()
+                        """,
+                        [str(profile.id), embedding_str, searchable_text],
+                    )
+                logger.info("Embedding generated and stored for profile %s on approval.", profile.id)
+        except Exception as exc:
+            # Never block approval because of an embedding failure — log and continue.
+            logger.warning("Embedding generation failed for profile %s after approval: %s", profile.id, exc)
+
         send_approval_email(to_email=profile.email, full_name=profile.full_name)
 
         return _ok(

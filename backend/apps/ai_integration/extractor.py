@@ -103,7 +103,7 @@ JSON:"""
 _STRICT_RETRY_TEMPLATE = """\
 Output ONLY the raw JSON object starting with {{ and ending with }}. No markdown. No explanation.
 
-Important: Extract ALL skills from TECHNICAL SKILLS section. Extract ALL projects from PROJECTS section.
+Important: Extract ALL skills, ALL experiences (company, designation, dates), and ALL projects.
 
 Resume:
 ---
@@ -165,7 +165,7 @@ def _call_ollama(prompt: str) -> str:
         "stream": False,
         "options": {
             "temperature": 0.1,   # low temperature for deterministic extraction
-            "num_predict": 1000,  # resume JSON is ~400-600 tokens; cap here to avoid long CPU waits
+            "num_predict": 3000,  # enough for full JSON including all experiences/projects
         },
     }
 
@@ -249,22 +249,31 @@ _PROJECT_SECTION_RE = re.compile(
     re.IGNORECASE,
 )
 
+_EXPERIENCE_SECTION_RE = re.compile(
+    r"^(work\s+experience|professional\s+experience|experience|employment(\s+history)?|"
+    r"career\s+history|work\s+history)",
+    re.IGNORECASE,
+)
+
 _DEPRIORITIZE_RE = re.compile(
-    r"^(work\s+experience|professional\s+experience|experience|employment|"
-    r"education|academic|certifications?|awards?|achievements?|references?)",
+    r"^(education|academic|certifications?|awards?|achievements?|references?|"
+    r"hobbies|interests?|languages?|declaration)",
     re.IGNORECASE,
 )
 
 
 def _prioritize_skills_section(text: str) -> str:
     """
-    Reorder resume text so skills and projects sections appear first,
-    surviving the character truncation cutoff.
-    Works with any heading case (Title Case, ALL CAPS, lowercase, etc.).
+    Reorder resume text so skills, projects, and experience appear before
+    low-value sections (education, references, etc.), surviving the character
+    truncation cutoff.
+    Order: intro → skills → projects → experience → rest
     Falls back to original text if no recognizable sections found.
     """
     lines = text.splitlines(keepends=True)
-    sections: dict[str, list[str]] = {"intro": [], "skills": [], "projects": [], "rest": []}
+    sections: dict[str, list[str]] = {
+        "intro": [], "skills": [], "projects": [], "experience": [], "rest": []
+    }
     current = "intro"
 
     for line in lines:
@@ -273,15 +282,18 @@ def _prioritize_skills_section(text: str) -> str:
             current = "skills"
         elif _PROJECT_SECTION_RE.match(stripped):
             current = "projects"
+        elif _EXPERIENCE_SECTION_RE.match(stripped):
+            current = "experience"
         elif _DEPRIORITIZE_RE.match(stripped):
             current = "rest"
         sections[current].append(line)
 
-    if sections["skills"] or sections["projects"]:
+    if sections["skills"] or sections["projects"] or sections["experience"]:
         reordered = (
             sections["intro"]
             + sections["skills"]
             + sections["projects"]
+            + sections["experience"]
             + sections["rest"]
         )
         return "".join(reordered)
@@ -321,9 +333,9 @@ def extract_profile(raw_text: str) -> dict[str, Any]:
     if not raw_text or not raw_text.strip():
         raise ValueError("resume text is empty — cannot extract profile data.")
 
-    # 8000 chars (~2000 tokens) captures full resume including TECHNICAL SKILLS and PROJECTS sections.
-    # Prioritize skills sections by moving them to the front if found.
-    truncated_text = _prioritize_skills_section(raw_text)[:8_000]
+    # 12000 chars (~3000 tokens) captures full resume including skills, projects, and experience.
+    # Reorder so skills/projects/experience come before low-value sections like references.
+    truncated_text = _prioritize_skills_section(raw_text)[:12_000]
 
     # --- First attempt ---
     first_prompt = _EXTRACTION_USER_TEMPLATE.format(resume_text=truncated_text)

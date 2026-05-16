@@ -15,9 +15,19 @@ import { CertificationsEditor } from '@/components/profile/CertificationsEditor'
 import { LanguagesEditor } from '@/components/profile/LanguagesEditor'
 import { ArrowLeft, Download, Loader2, User, Link as LinkIcon } from 'lucide-react'
 import Link from 'next/link'
-import type { Profile } from '@/types'
+import type {
+  Profile, Skill, ExperienceEntry, ProjectEntry,
+  EducationEntry, Certification, Language,
+} from '@/types'
 
 const API_BASE = process.env.NEXT_PUBLIC_API_BASE_URL ?? 'http://localhost:8000'
+
+async function fetchJson(url: string, token: string) {
+  const res = await fetch(url, { headers: { Authorization: `Bearer ${token}` } })
+  if (!res.ok) return null
+  const body = await res.json()
+  return body.data
+}
 
 export default function ProfilePreviewPage() {
   const params = useParams()
@@ -33,12 +43,94 @@ export default function ProfilePreviewPage() {
     try {
       const { data: sessionData } = await supabase.auth.getSession()
       if (!sessionData.session) return
-      const res = await fetch(`${API_BASE}/api/v1/profiles/${id}/`, {
-        headers: { Authorization: `Bearer ${sessionData.session.access_token}` },
+      const token = sessionData.session.access_token
+      const base = `${API_BASE}/api/v1/profiles/${id}`
+
+      // Fetch profile + all sub-resources in parallel
+      const [profileData, skillsData, expData, projData, eduData, certData] =
+        await Promise.all([
+          fetchJson(`${base}/`, token),
+          fetchJson(`${base}/skills/`, token),
+          fetchJson(`${base}/experiences/`, token),
+          fetchJson(`${base}/projects/`, token),
+          fetchJson(`${base}/education/`, token),
+          fetchJson(`${base}/certifications/`, token),
+        ])
+
+      if (!profileData) throw new Error('Profile not found')
+
+      const { user, employee } = profileData
+
+      // Map API shapes → editor-expected types
+      const skills: Skill[] = (skillsData ?? []).map((s: any) => ({
+        id: s.id,
+        name: s.name,
+        proficiency: s.proficiency_level,
+        years: s.years_of_experience ?? 0,
+      }))
+
+      const experience: ExperienceEntry[] = (expData ?? []).map((e: any) => ({
+        id: e.id,
+        company: e.company_name,
+        role: e.designation,
+        start_date: e.start_date ?? '',
+        end_date: e.end_date ?? null,
+        description: e.description ?? '',
+      }))
+
+      const projects: ProjectEntry[] = (projData ?? []).map((p: any) => ({
+        id: p.id,
+        name: p.name,
+        description: p.description ?? '',
+        tech_stack: (p.skills ?? []).map((s: any) => s.name),
+        duration: [p.start_date, p.is_current ? 'Present' : p.end_date]
+          .filter(Boolean).join(' – '),
+      }))
+
+      const education: EducationEntry[] = (eduData ?? []).map((e: any) => ({
+        id: e.id,
+        degree: e.degree,
+        institution: e.institution,
+        graduation_year: e.end_year ?? new Date().getFullYear(),
+      }))
+
+      const certifications: Certification[] = (certData ?? []).map((c: any) => ({
+        id: c.id,
+        name: c.name,
+        issuer: c.issuer ?? '',
+        issued_date: c.issue_date ?? '',
+        expiry_date: c.expiry_date ?? null,
+      }))
+
+      setProfile({
+        id: user.id,
+        user_id: user.id,
+        full_name: user.full_name ?? '',
+        email: user.email ?? '',
+        phone: user.phone ?? '',
+        designation: user.designation ?? '',
+        department: user.department ?? '',
+        location: user.location ?? '',
+        experience_years: user.experience_years != null ? parseFloat(user.experience_years) : null,
+        avatar_url: user.avatar_url ?? null,
+        status: user.profile_status ?? 'incomplete',
+        summary: employee?.summary ?? '',
+        skills,
+        experience,
+        projects,
+        education,
+        certifications,
+        languages: (employee?.languages ?? []) as Language[],
+        links: {
+          linkedin: employee?.linkedin_url ?? '',
+          github: employee?.github_url ?? '',
+          portfolio: employee?.portfolio_url ?? '',
+        },
+        resume_file_name: null,
+        resume_uploaded_at: null,
+        created_at: user.created_at ?? '',
+        updated_at: user.updated_at ?? '',
       })
-      if (!res.ok) throw new Error()
-      const body = await res.json()
-      setProfile(body.data)
     } catch {
       toast.error('Failed to load profile.')
     } finally {
@@ -56,25 +148,26 @@ export default function ProfilePreviewPage() {
       const res = await fetch(`${API_BASE}/api/v1/profiles/${id}/download/`, {
         headers: { Authorization: `Bearer ${sessionData.session.access_token}` },
       })
-      if (!res.ok) throw new Error()
+      if (!res.ok) {
+        const body = await res.json().catch(() => null)
+        throw new Error(body?.error ?? 'Download failed')
+      }
 
       const contentType = res.headers.get('content-type') ?? ''
       if (contentType.includes('application/json')) {
         const body = await res.json()
-        if (body.data?.url) {
-          window.open(body.data.url, '_blank', 'noopener,noreferrer')
-        }
+        if (body.data?.url) window.open(body.data.url, '_blank', 'noopener,noreferrer')
       } else {
         const blob = await res.blob()
         const url = URL.createObjectURL(blob)
         const a = document.createElement('a')
         a.href = url
-        a.download = `profile_${id}.pdf`
+        a.download = `${profile?.full_name?.replace(/\s+/g, '_') ?? id}_profile.pdf`
         a.click()
         URL.revokeObjectURL(url)
       }
-    } catch {
-      toast.error('Failed to download profile.')
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : 'Failed to download profile.')
     } finally {
       setIsDownloading(false)
     }
@@ -99,6 +192,7 @@ export default function ProfilePreviewPage() {
 
   return (
     <section className="w-full space-y-5">
+      {/* Toolbar */}
       <div className="flex items-center justify-between gap-4">
         <div className="flex items-center gap-3">
           <Link href="/hr/search">
@@ -108,25 +202,38 @@ export default function ProfilePreviewPage() {
           </Link>
           <h1 className="text-2xl font-semibold text-gray-900">Profile Preview</h1>
         </div>
-        <Button className="bg-indigo-600 hover:bg-indigo-700 gap-1" onClick={handleDownload} disabled={isDownloading}>
-          {isDownloading ? <Loader2 className="h-4 w-4 animate-spin" /> : <Download className="h-4 w-4" />}
+        <Button
+          className="bg-indigo-600 hover:bg-indigo-700 gap-1"
+          onClick={handleDownload}
+          disabled={isDownloading}
+        >
+          {isDownloading
+            ? <Loader2 className="h-4 w-4 animate-spin" />
+            : <Download className="h-4 w-4" />}
           Download Profile
         </Button>
       </div>
 
-      {/* Header */}
+      {/* Header card */}
       <Card>
         <CardContent className="pt-6">
           <div className="flex items-start gap-4">
             <div className="flex h-16 w-16 shrink-0 items-center justify-center rounded-full bg-indigo-100 text-indigo-700 text-xl font-bold">
-              {profile.full_name ? profile.full_name[0].toUpperCase() : <User className="h-8 w-8" />}
+              {profile.avatar_url
+                ? <img src={profile.avatar_url} alt={profile.full_name} className="h-16 w-16 rounded-full object-cover" />
+                : profile.full_name ? profile.full_name[0].toUpperCase() : <User className="h-8 w-8" />}
             </div>
             <div className="flex-1">
               <div className="flex items-start justify-between flex-wrap gap-2">
                 <div>
                   <h2 className="text-xl font-semibold text-gray-900">{profile.full_name}</h2>
                   {profile.designation && <p className="text-sm text-indigo-600">{profile.designation}</p>}
-                  <p className="mt-0.5 text-xs text-gray-500">{[profile.department, profile.location].filter(Boolean).join(' · ')}</p>
+                  <p className="mt-0.5 text-xs text-gray-500">
+                    {[profile.department, profile.location].filter(Boolean).join(' · ')}
+                  </p>
+                  {profile.experience_years != null && (
+                    <p className="mt-0.5 text-xs text-gray-500">{profile.experience_years} yrs experience</p>
+                  )}
                 </div>
                 <ProfileStatusBadge status={profile.status} size="lg" />
               </div>
@@ -135,6 +242,7 @@ export default function ProfilePreviewPage() {
         </CardContent>
       </Card>
 
+      {/* Summary */}
       {profile.summary && (
         <Card>
           <CardHeader className="pb-3"><CardTitle className="text-base">Summary</CardTitle></CardHeader>
@@ -142,53 +250,65 @@ export default function ProfilePreviewPage() {
         </Card>
       )}
 
+      {/* Skills */}
       <Card>
         <CardHeader className="pb-3"><CardTitle className="text-base">Skills</CardTitle></CardHeader>
         <CardContent><SkillsEditor skills={profile.skills ?? []} isEditing={false} /></CardContent>
       </Card>
 
+      {/* Experience */}
       <Card>
         <CardHeader className="pb-3"><CardTitle className="text-base">Work Experience</CardTitle></CardHeader>
         <CardContent><ExperienceEditor experience={profile.experience ?? []} isEditing={false} /></CardContent>
       </Card>
 
+      {/* Projects */}
       <Card>
         <CardHeader className="pb-3"><CardTitle className="text-base">Projects</CardTitle></CardHeader>
         <CardContent><ProjectsEditor projects={profile.projects ?? []} isEditing={false} /></CardContent>
       </Card>
 
+      {/* Education */}
       <Card>
         <CardHeader className="pb-3"><CardTitle className="text-base">Education</CardTitle></CardHeader>
         <CardContent><EducationEditor education={profile.education ?? []} isEditing={false} /></CardContent>
       </Card>
 
+      {/* Certifications */}
       <Card>
         <CardHeader className="pb-3"><CardTitle className="text-base">Certifications</CardTitle></CardHeader>
         <CardContent><CertificationsEditor certifications={profile.certifications ?? []} isEditing={false} /></CardContent>
       </Card>
 
-      <Card>
-        <CardHeader className="pb-3"><CardTitle className="text-base">Languages</CardTitle></CardHeader>
-        <CardContent><LanguagesEditor languages={profile.languages ?? []} isEditing={false} /></CardContent>
-      </Card>
+      {/* Languages */}
+      {(profile.languages ?? []).length > 0 && (
+        <Card>
+          <CardHeader className="pb-3"><CardTitle className="text-base">Languages</CardTitle></CardHeader>
+          <CardContent><LanguagesEditor languages={profile.languages ?? []} isEditing={false} /></CardContent>
+        </Card>
+      )}
 
+      {/* Links */}
       {(profile.links?.linkedin || profile.links?.github || profile.links?.portfolio) && (
         <Card>
           <CardHeader className="pb-3"><CardTitle className="text-base">Links</CardTitle></CardHeader>
           <CardContent>
             <div className="space-y-1.5">
               {profile.links?.linkedin && (
-                <a href={profile.links.linkedin} target="_blank" rel="noopener noreferrer" className="flex items-center gap-2 text-sm text-indigo-600 hover:underline">
+                <a href={profile.links.linkedin} target="_blank" rel="noopener noreferrer"
+                  className="flex items-center gap-2 text-sm text-indigo-600 hover:underline">
                   <LinkIcon className="h-4 w-4" /> LinkedIn
                 </a>
               )}
               {profile.links?.github && (
-                <a href={profile.links.github} target="_blank" rel="noopener noreferrer" className="flex items-center gap-2 text-sm text-indigo-600 hover:underline">
+                <a href={profile.links.github} target="_blank" rel="noopener noreferrer"
+                  className="flex items-center gap-2 text-sm text-indigo-600 hover:underline">
                   <LinkIcon className="h-4 w-4" /> GitHub
                 </a>
               )}
               {profile.links?.portfolio && (
-                <a href={profile.links.portfolio} target="_blank" rel="noopener noreferrer" className="flex items-center gap-2 text-sm text-indigo-600 hover:underline">
+                <a href={profile.links.portfolio} target="_blank" rel="noopener noreferrer"
+                  className="flex items-center gap-2 text-sm text-indigo-600 hover:underline">
                   <LinkIcon className="h-4 w-4" /> Portfolio
                 </a>
               )}

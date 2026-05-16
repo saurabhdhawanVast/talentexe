@@ -159,6 +159,39 @@ export interface BulkUploadResult {
   errors: string[]
 }
 
+// ─── NLP Search ───────────────────────────────────────────────────────────────
+
+export interface QueryParsed {
+  skills_required: string[]
+  skills_nice_to_have: string[]
+  location: string | null
+  min_years_experience: number | null
+  role_hint: string | null
+  department: string | null
+  availability_hint: string | null
+}
+
+export interface SearchResult {
+  profile_id: string
+  full_name: string
+  designation: string | null
+  department: string | null
+  location: string | null
+  experience_years: number | null
+  profile_status: string
+  match_score: number
+  explanation: string
+  top_skills: string[]
+  similarity: number
+  avatar_url?: string | null
+}
+
+export interface SearchResponse {
+  query_parsed: QueryParsed
+  results: SearchResult[]
+  total: number
+}
+
 // ─── API envelope ─────────────────────────────────────────────────────────────
 
 export interface ApiEnvelope<T> {
