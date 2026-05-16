@@ -25,8 +25,8 @@ logger = logging.getLogger(__name__)
 
 _OLLAMA_TIMEOUT = 120
 _DEFAULT_MAX_RESULTS = 20
-_MIN_SIMILARITY = 0.35   # drop candidates with cosine similarity below this before LLM scoring
-_MIN_MATCH_SCORE = 60    # drop results with LLM match score below this from the final response
+_MIN_SIMILARITY = 0.45   # drop candidates with cosine similarity below this before LLM scoring
+_MIN_MATCH_SCORE = 65    # drop results with LLM match score below this from the final response
 
 
 # ---------------------------------------------------------------------------
@@ -230,6 +230,18 @@ def _apply_hard_filters(results: list[dict], parsed: dict) -> list[dict]:
             if department in (r.get("department") or "").lower()
         ]
 
+    # Skill hard filter: if required skills are specified, keep only profiles
+    # that have at least one of them (case-insensitive substring match).
+    skills_required = [s.lower() for s in (parsed.get("skills_required") or []) if s]
+    if skills_required:
+        def _has_required_skill(r: dict) -> bool:
+            profile_skills = [s.lower() for s in (r.get("top_skills") or [])]
+            return any(
+                any(req in ps or ps in req for ps in profile_skills)
+                for req in skills_required
+            )
+        filtered = [r for r in filtered if _has_required_skill(r)]
+
     return filtered[: _max_results()]
 
 
@@ -281,8 +293,11 @@ def search(query: str, filters: dict | None = None) -> dict[str, Any]:
 
     Raises ValueError if query is too short or Ollama is unreachable.
     """
-    if len(query.strip().split()) < 3:
-        raise ValueError("Query too short. Add more detail — skills, location, or experience level.")
+    if len(query.strip().split()) < 5:
+        raise ValueError(
+            "Query too short. Please describe what you're looking for in more detail — "
+            "e.g. 'Python backend developer with Django experience' instead of 'python developer'."
+        )
 
     # Step 1 — parse intent
     parsed = parse_query(query)
@@ -315,7 +330,13 @@ def search(query: str, filters: dict | None = None) -> dict[str, Any]:
     if not candidates:
         return {"query_parsed": parsed, "results": [], "total": 0}
 
-    # Step 4 — hard filters → top 20
+    # Attach top skills early so hard filters and explainer can use them
+    candidate_ids = [c["profile_id"] for c in candidates]
+    top_skills_map = _fetch_top_skills(candidate_ids)
+    for c in candidates:
+        c["top_skills"] = top_skills_map.get(c["profile_id"], [])
+
+    # Step 4 — hard filters → top 20 (includes skill-match filter)
     filtered = _apply_hard_filters(candidates, parsed)
 
     if not filtered:
@@ -330,12 +351,6 @@ def search(query: str, filters: dict | None = None) -> dict[str, Any]:
 
     if not explained:
         return {"query_parsed": parsed, "results": [], "total": 0}
-
-    # Attach top skills
-    profile_ids = [r["profile_id"] for r in explained]
-    top_skills_map = _fetch_top_skills(profile_ids)
-    for result in explained:
-        result["top_skills"] = top_skills_map.get(result["profile_id"], [])
 
     # Sort by match_score descending
     explained.sort(key=lambda r: r.get("match_score", 0), reverse=True)

@@ -65,7 +65,7 @@ export default function SmartSearchPage() {
   const [departmentFilter, setDepartmentFilter] = useState('')
 
   const handleSearch = async () => {
-    if (query.trim().split(/\s+/).length < 3) return
+    if (query.trim().split(/\s+/).filter(Boolean).length < 5) return
 
     setIsLoading(true)
     setResults(null)

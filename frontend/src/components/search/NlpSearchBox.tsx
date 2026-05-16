@@ -13,8 +13,10 @@ interface NlpSearchBoxProps {
 }
 
 export function NlpSearchBox({ value, onChange, onSearch, isLoading }: NlpSearchBoxProps) {
+  const isQueryLongEnough = value.trim().split(/\s+/).filter(Boolean).length >= 5
+
   const handleKeyDown = (e: React.KeyboardEvent<HTMLInputElement>) => {
-    if (e.key === 'Enter' && value.trim().length >= 3) {
+    if (e.key === 'Enter' && isQueryLongEnough) {
       onSearch()
     }
   }
@@ -35,7 +37,7 @@ export function NlpSearchBox({ value, onChange, onSearch, isLoading }: NlpSearch
       <Button
         className="h-12 px-6 bg-indigo-600 hover:bg-indigo-700"
         onClick={onSearch}
-        disabled={isLoading || value.trim().length < 3}
+        disabled={isLoading || !isQueryLongEnough}
         aria-label="Search"
       >
         {isLoading ? 'Searching...' : 'Search'}

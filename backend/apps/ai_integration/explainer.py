@@ -79,6 +79,8 @@ def _build_profiles_text(profiles: list[dict]) -> str:
             parts.append(f"Location: {p['location']}")
         if p.get("experience_years") is not None:
             parts.append(f"Experience: {p['experience_years']} yrs")
+        if p.get("top_skills"):
+            parts.append(f"Skills: {', '.join(p['top_skills'])}")
         lines.append(" | ".join(parts))
     return "\n".join(lines)
 
