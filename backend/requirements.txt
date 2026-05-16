@@ -1,0 +1,18 @@
+django==5.0.6
+djangorestframework==3.15.2
+django-environ==0.11.2
+django-cors-headers==4.4.0
+psycopg2-binary==2.9.9
+supabase==2.5.0
+PyJWT==2.8.0
+cryptography==42.0.8
+gunicorn==22.0.0
+weasyprint==62.3
+openpyxl==3.1.2
+pandas==2.2.2
+Pillow==10.3.0
+# Resume text extraction
+pdfminer.six==20231228
+python-docx==1.1.2
+# HTTP client for Ollama API calls
+requests==2.32.3
